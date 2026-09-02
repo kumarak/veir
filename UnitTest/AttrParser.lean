@@ -222,8 +222,8 @@ macro "#assert " e:term : command =>
 #assert expectErrorAttr "#foo.bar<baz> :" "type expected" (some 15) true
 #assert expectErrorAttr "#foo.bar : 5" "type expected" (some 11) true
 -- The flag is still required when the attribute has no body or carries a type.
-#assert expectErrorAttr "#foo.bar" "attribute is not registered. Consider using --allow-unregistered-dialect." (some 0) false
-#assert expectErrorAttr "#foo.bar<baz> : i32" "attribute is not registered. Consider using --allow-unregistered-dialect." (some 0) false
+#assert expectErrorAttr "#foo.bar" "attribute '#foo.bar' is not registered. Consider using --allow-unregistered-dialect." (some 0) false
+#assert expectErrorAttr "#foo.bar<baz> : i32" "attribute '#foo.bar' is not registered. Consider using --allow-unregistered-dialect." (some 0) false
 -- Printing reproduces the source text, with the trailing type after the body.
 #assert expectRoundTripAttr "#foo.bar" true
 #assert expectRoundTripAttr "#foo.bar<baz>" true
