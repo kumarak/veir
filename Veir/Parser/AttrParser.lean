@@ -43,20 +43,27 @@ def AttrParserM.run' (self : AttrParserM α)
 
 /--
   Parse an optional integer type.
-  An integer type is represented as `i` followed by a positive integer indicating its width, e.g., `i32`.
+  An integer type is represented as `i`, `si` or `ui` (signless, signed or unsigned) followed by
+  a positive integer indicating its width, e.g., `i32`, `si32` or `ui32`.
 -/
 def parseOptionalIntegerType : AttrParserM (Option IntegerType) := do
   match ← peekToken with
   | { kind := .bareIdent, slice := slice } =>
-    if slice.size < 2 then
+    let input := (← (getThe ParserState)).input
+    let byteAt (offset : Nat) : UInt8 := input.getD (slice.start.byteOffset + offset) 0
+    let signednessPrefix : Option (IntegerType.Signedness × Nat) :=
+      if byteAt 0 == 'i'.toUInt8 then some (.signless, 1)
+      else if byteAt 0 == 's'.toUInt8 && byteAt 1 == 'i'.toUInt8 then some (.signed, 2)
+      else if byteAt 0 == 'u'.toUInt8 && byteAt 1 == 'i'.toUInt8 then some (.unsigned, 2)
+      else none
+    let some (signedness, prefixSize) := signednessPrefix | return none
+    if slice.size ≤ prefixSize then
       return none
-    if (← (getThe ParserState)).input.getD slice.start.byteOffset 0 == 'i'.toUInt8 then
-      let bitwidthSlice : Slice := {start := slice.start + 1, stop := slice.stop}
-      let identifier := bitwidthSlice.of (← (getThe ParserState)).input
-      let some bitwidth := (String.fromUTF8? identifier).bind String.toNat? | return none
-      let _ ← consumeToken
-      return some (IntegerType.mk bitwidth)
-    return none
+    let bitwidthSlice : Slice := {start := slice.start + prefixSize, stop := slice.stop}
+    let some bitwidth := (String.fromUTF8? (bitwidthSlice.of input)).bind String.toNat?
+      | return none
+    let _ ← consumeToken
+    return some { bitwidth, signedness }
   | _ => return none
 
 /--
@@ -186,9 +193,9 @@ def parseRegisterType (errorMsg : String := "register type expected") : AttrPars
 -/
 def parseOptionalIntegerAttr : AttrParserM (Option IntegerAttr) := do
   if (← parseOptionalKeyword "false".toByteArray) then
-    return some (IntegerAttr.mk 0 (IntegerType.mk 1))
+    return some (IntegerAttr.mk 0 (IntegerType.signless 1))
   if (← parseOptionalKeyword "true".toByteArray) then
-    return some (IntegerAttr.mk 1 (IntegerType.mk 1))
+    return some (IntegerAttr.mk 1 (IntegerType.signless 1))
 
   let some value ← parseOptionalInteger false true
     | return none

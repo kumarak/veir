@@ -554,19 +554,19 @@ def MemoryState.llvmLoad (state : MemoryState) (addr : UInt64) (type : TypeAttr)
     : Interp RuntimeValue := do
   if addr == 0 then Interp.ub else
   match type.val with
-  | Attribute.integerType { bitwidth := 8 } =>
+  | Attribute.integerType { bitwidth := 8, .. } =>
       let ba ← state.load addr 1
       if ← state.hasPoison addr 1 then return .int 8 .poison
       return .int 8 (.val ba[0]!.toNat)
-  | Attribute.integerType { bitwidth := 16 } =>
+  | Attribute.integerType { bitwidth := 16, .. } =>
       let ba ← state.load addr 2
       if ← state.hasPoison addr 2 then return .int 16 .poison
       return .int 16 (.val (ba.toBitVecLE 2))
-  | Attribute.integerType { bitwidth := 32 } =>
+  | Attribute.integerType { bitwidth := 32, .. } =>
       let ba ← state.load addr 4
       if ← state.hasPoison addr 4 then return .int 32 .poison
       return .int 32 (.val (ba.toBitVecLE 4))
-  | Attribute.integerType { bitwidth := 64 } =>
+  | Attribute.integerType { bitwidth := 64, .. } =>
       let ba ← state.load addr 8
       if ← state.hasPoison addr 8 then return .int 64 .poison
       return .int 64 (.val (BitVec.ofNat 64 ba.toUInt64LE!.toNat))
@@ -805,12 +805,12 @@ def ModArith.interpretOp' (opType : Veir.Mod_Arith) (properties : propertiesOf o
   match opType with
   | .constant => do
     let some resType := resultTypes[0]? | none
-    let .modArithType ⟨⟨mod, ⟨bw⟩⟩⟩ := resType.val | none
+    let .modArithType ⟨⟨mod, ⟨bw, _⟩⟩⟩ := resType.val | none
     let res := LLVM.Int.constant bw (properties.value.value % mod)
     return (#[RuntimeValue.int bw res], none)
   | .add => do
     let some resType := resultTypes[0]? | none
-    let .modArithType ⟨⟨mod, ⟨bw⟩⟩⟩ := resType.val | none
+    let .modArithType ⟨⟨mod, ⟨bw, _⟩⟩⟩ := resType.val | none
     let some (lhs, rhs) := ModArith.binaryOperands bw operands | none
     let res :=
       match lhs.toNat?, rhs.toNat? with
@@ -819,7 +819,7 @@ def ModArith.interpretOp' (opType : Veir.Mod_Arith) (properties : propertiesOf o
     return (#[RuntimeValue.int bw res], none)
   | .sub => do
     let some resType := resultTypes[0]? | none
-    let .modArithType ⟨⟨mod, ⟨bw⟩⟩⟩ := resType.val | none
+    let .modArithType ⟨⟨mod, ⟨bw, _⟩⟩⟩ := resType.val | none
     let some (lhs, rhs) := ModArith.binaryOperands bw operands | none
     let res :=
       match lhs.toNat?, rhs.toNat? with
@@ -828,7 +828,7 @@ def ModArith.interpretOp' (opType : Veir.Mod_Arith) (properties : propertiesOf o
     return (#[RuntimeValue.int bw res], none)
   | .mul => do
     let some resType := resultTypes[0]? | none
-    let .modArithType ⟨⟨mod, ⟨bw⟩⟩⟩ := resType.val | none
+    let .modArithType ⟨⟨mod, ⟨bw, _⟩⟩⟩ := resType.val | none
     let some (lhs, rhs) := ModArith.binaryOperands bw operands | none
     let res :=
       match lhs.toNat?, rhs.toNat? with
@@ -1138,7 +1138,7 @@ def Llvm.interpretOp' (opType : Veir.Llvm) (properties : propertiesOf opType)
   | .alloca => do
     let [.int _ (.val count)] := operands.toList | none
     let size ← match properties.elem_type.val with
-    | Attribute.integerType { bitwidth := bw } => .ok ((bw / 8))
+    | Attribute.integerType { bitwidth := bw, .. } => .ok ((bw / 8))
     | .llvmPointerType _ => .ok (8)
     | _ => none
     let totalSize := (size * count.toNat).toUInt64
@@ -1172,13 +1172,13 @@ def Llvm.interpretOp' (opType : Veir.Llvm) (properties : propertiesOf opType)
     let [val] := operands.toList | none
     let [⟨type, _⟩] := resultTypes.toList | none
     let result ← do match val, type with
-      | .int bw1 val', .integerType ⟨bw2⟩ =>
+      | .int bw1 val', .integerType ⟨bw2, _⟩ =>
           if bw1 ≠ bw2 then .fail else .ok (val)
       | .int bw1 val', .byteType ⟨bw2⟩ =>
           if bw1 ≠ bw2 then .fail else .ok ((.byte bw1 $ LLVM.Byte.fromInt val'))
       | .byte bw1 val', .byteType ⟨bw2⟩ =>
           if bw1 ≠ bw2 then .fail else .ok (val)
-      | .byte bw1 val', .integerType ⟨bw2⟩ =>
+      | .byte bw1 val', .integerType ⟨bw2, _⟩ =>
           if bw1 ≠ bw2 then .fail else .ok ((.int bw1 $ val'.toInt))
       | .byte bw val', .llvmPointerType _ =>
           if h : bw = 64 then .ok ((.addr (val'.cast h).toUInt64)) else .fail

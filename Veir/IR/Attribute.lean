@@ -39,11 +39,28 @@ private local instance : Repr ByteArray where
 /-! ## Attribute definitions -/
 
 /--
-  A `!builtin.integer` is an integer type with a given bitwidth.
+  The signedness semantics of a builtin integer type, after MLIR's
+  `IntegerType::SignednessSemantics`. A signless integer (`i32`) leaves the
+  interpretation of its bits to the operations that use it; a signed (`si32`)
+  or unsigned (`ui32`) integer fixes it in the type.
+-/
+inductive IntegerType.Signedness
+  | signless
+  | signed
+  | unsigned
+deriving Inhabited, Repr, DecidableEq, Hashable
+
+/--
+  A `!builtin.integer` is an integer type with a given bitwidth and signedness,
+  printed as `i32`, `si32` or `ui32`.
 -/
 structure IntegerType where
   bitwidth : Nat
+  signedness : IntegerType.Signedness := .signless
 deriving Inhabited, Repr, DecidableEq, Hashable
+
+/-- The signless integer type of the given bitwidth, e.g. `i32`. -/
+def IntegerType.signless (bitwidth : Nat) : IntegerType := { bitwidth }
 
 /--
  A floating point type with a given bitwidth.
@@ -313,7 +330,7 @@ structure CirIntType where
   width : Nat
 deriving Inhabited, Repr, DecidableEq, Hashable
 
-/-- The builtin integer type a `!cir.int` lowers to (signedness is dropped). -/
+/-- The signless builtin integer type a `!cir.int` lowers to; the ClangIR signedness is dropped. -/
 def CirIntType.toIntegerType (type : CirIntType) : IntegerType := { bitwidth := type.width }
 
 /-- The `!cir.bool` type from ClangIR. -/
@@ -961,7 +978,11 @@ instance : DecidableEq UnregisteredAttr := UnregisteredAttr.decEq
 -/
 
 instance : ToString IntegerType where
-  toString type := s!"i{type.bitwidth}"
+  toString type :=
+    match type.signedness with
+    | .signless => s!"i{type.bitwidth}"
+    | .signed => s!"si{type.bitwidth}"
+    | .unsigned => s!"ui{type.bitwidth}"
 
 instance : ToString FloatType where
   toString type := s!"f{type.bitwidth}"
@@ -1582,7 +1603,7 @@ def isType (attr : Attribute) : Bool :=
 -/
 def bitwidthOfType (type : Attribute) : Option Nat :=
   match type with
-  | .integerType { bitwidth } | .floatType { bitwidth } | .byteType { bitwidth } => some bitwidth
+  | .integerType { bitwidth, .. } | .floatType { bitwidth } | .byteType { bitwidth } => some bitwidth
   | .llvmPointerType _ => some 64
   | _ => none
 
@@ -1591,7 +1612,7 @@ def bitwidthOfType (type : Attribute) : Option Nat :=
 -/
 def sizeOfType (type : Attribute) : Option Nat :=
   match type with
-  | .integerType { bitwidth } | .floatType { bitwidth } | .byteType { bitwidth } => some ((bitwidth + 7) / 8)
+  | .integerType { bitwidth, .. } | .floatType { bitwidth } | .byteType { bitwidth } => some ((bitwidth + 7) / 8)
   | .llvmPointerType _ => some 8
   | .llvmArrayType { size, type } => do
       let inner ← sizeOfType type
@@ -1676,7 +1697,7 @@ def TypeAttr := {attr // Attribute.isType attr}
 deriving Repr, Hashable, DecidableEq
 
 instance : Inhabited TypeAttr where
-  default := ⟨.integerType (IntegerType.mk 0), by rfl⟩
+  default := ⟨.integerType (IntegerType.signless 0), by rfl⟩
 
 instance : Coe TypeAttr Attribute where
   coe typeAttr := typeAttr.val

@@ -179,14 +179,14 @@ def Llvm.toAttrDict
     if props.nuw then
       val := val + 2
     if val > 0 then
-      let attr := IntegerAttr.mk (Int.ofNat val) (IntegerType.mk 32)
+      let attr := IntegerAttr.mk (Int.ofNat val) (IntegerType.signless 32)
       dict := dict.insert "overflowFlags".toUTF8 (Attribute.integerAttr attr)
     dict
   | .fadd | .fsub | .fmul | .fdiv | .frem =>
     (Std.HashMap.emptyWithCapacity 1).insert
       "fastmathFlags".toUTF8 (Attribute.fastMathFlagsAttr props.attr)
   | .icmp =>
-    let value := IntegerAttr.mk (Int.ofNat props.predicate.toNat) (IntegerType.mk 64)
+    let value := IntegerAttr.mk (Int.ofNat props.predicate.toNat) (IntegerType.signless 64)
     (Std.HashMap.emptyWithCapacity 1).insert
       "predicate".toUTF8 (Attribute.integerAttr value)
   | .cond_br =>
@@ -211,12 +211,12 @@ def Llvm.toAttrDict
     dict
   | .intr__ctlz | .intr__cttz =>
     let value := if props.is_zero_poison then 1 else 0
-    let attr := IntegerAttr.mk value (IntegerType.mk 1)
+    let attr := IntegerAttr.mk value (IntegerType.signless 1)
     (Std.HashMap.emptyWithCapacity 1).insert
       "is_zero_poison".toUTF8 (Attribute.integerAttr attr)
   | .intr__abs =>
     let value := if props.is_int_min_poison then 1 else 0
-    let attr := IntegerAttr.mk value (IntegerType.mk 1)
+    let attr := IntegerAttr.mk value (IntegerType.signless 1)
     (Std.HashMap.emptyWithCapacity 1).insert
       "is_int_min_poison".toUTF8 (Attribute.integerAttr attr)
   | .alloca => Id.run do
@@ -482,7 +482,7 @@ def Llvm.verifyLocalInvariants {OpInfo : Type} [IsOpCode OpInfo]
     | .string stringAttr =>
       match resultType with
       | .llvmArrayType arrType =>
-        if arrType.type ≠ .integerType ⟨8⟩ then
+        if arrType.type ≠ .integerType (IntegerType.signless 8) then
           throw "llvm.mlir.constant: Expected array<N x i8> result type for a string constant"
         if stringAttr.value.size ≠ arrType.size then
           throw s!"llvm.mlir.constant: string length {stringAttr.value.size} does not match declared array size {arrType.size}"
