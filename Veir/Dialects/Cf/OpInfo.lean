@@ -83,6 +83,7 @@ def Cf.verifyLocalInvariants {OpInfo : Type} [IsOpCode OpInfo] [HasDialect OpInf
     if props.branch_weights.values.size ≠ 2 && props.branch_weights.values.size ≠ 0 then
       throw "Expected 0 or 2 branch weights"
     op.verifyCondBranchOperandSegmentSizes ctx opIn props.operandSegmentSizes 1
+    ((op.getOperand! ctx.raw 0).getType! ctx.raw).verifyI1 "Expected i1 condition"
 
 instance : HasOpInfo Cf where
   verifyLocalInvariants := Cf.verifyLocalInvariants

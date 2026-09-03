@@ -503,11 +503,11 @@ def Llvm.verifyLocalInvariants {OpInfo : Type} [IsOpCode OpInfo]
       throw "Expected 0 successors"
     let properties := op.getProperties! ctx.raw Llvm.mlir__global
     if let some alignment := properties.alignment then
-      if alignment.type.bitwidth ≠ 64 then
+      if alignment.type ≠ IntegerType.signless 64 then
         throw "'alignment' must be a 64-bit signless integer attribute"
       if !isValidLLVMAlignment alignment.value then
         throw "alignment attribute is not a power of 2"
-    if properties.addr_space.type.bitwidth ≠ 32 then
+    if properties.addr_space.type ≠ IntegerType.signless 32 then
       throw "'addr_space' must be a 32-bit signless integer attribute"
     if let some value := properties.value then
       let body := (op.getRegion! ctx.raw 0).get! ctx.raw
@@ -588,25 +588,26 @@ def Llvm.verifyLocalInvariants {OpInfo : Type} [IsOpCode OpInfo]
       throw "Expected 0 or 2 branch weights"
     let sizes := (op.getProperties! ctx.raw Llvm.cond_br).operandSegmentSizes
     op.verifyCondBranchOperandSegmentSizes ctx opIn sizes 1
+    ((op.getOperand! ctx.raw 0).getType! ctx.raw).verifyI1 "Expected i1 condition"
   | .alloca => do
     op.checkIsNonNullIntegerType ctx opIn
     op.verifyPlainOpCounts ctx opIn 1 1
     let properties := op.getProperties! ctx.raw Llvm.alloca
-    if properties.alignment.type.bitwidth ≠ 64 then
+    if properties.alignment.type ≠ IntegerType.signless 64 then
       throw "'llvm.alloca' op attribute 'alignment' failed to satisfy constraint: 64-bit signless integer attribute"
     pure ()
   | .load => do
     op.checkIsNonNullIntegerType ctx opIn
     op.verifyPlainOpCounts ctx opIn 1 1
     let properties := op.getProperties! ctx.raw Llvm.load
-    if properties.alignment.type.bitwidth ≠ 64 then
+    if properties.alignment.type ≠ IntegerType.signless 64 then
       throw "'llvm.load' op attribute 'alignment' failed to satisfy constraint: 64-bit signless integer attribute"
     pure ()
   | .store => do
     op.checkIsNonNullIntegerType ctx opIn
     op.verifyPlainOpCounts ctx opIn 2 0
     let properties := op.getProperties! ctx.raw Llvm.store
-    if properties.alignment.type.bitwidth ≠ 64 then
+    if properties.alignment.type ≠ IntegerType.signless 64 then
       throw "'llvm.store' op attribute 'alignment' failed to satisfy constraint: 64-bit signless integer attribute"
     pure ()
   | .getelementptr => do

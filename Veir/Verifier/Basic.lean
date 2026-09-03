@@ -171,11 +171,12 @@ def TypeAttr.verifyIntegerOrPointerType
   | .llvmPointerType _ => pure ()
   | _ => throw errMsg
 
+/-- Check that `ty` is the signless `i1`; `si1` and `ui1` are rejected, as MLIR's `I1` does. -/
 def TypeAttr.verifyI1
     (ty : TypeAttr) (errMsg : String) : Except String PUnit :=
   match ty.val with
   | .integerType intType =>
-    if intType.bitwidth ≠ 1 then
+    if intType ≠ IntegerType.signless 1 then
       throw errMsg
     else
       pure ()

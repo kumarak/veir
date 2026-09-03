@@ -60,7 +60,16 @@ structure IntegerType where
 deriving Inhabited, Repr, DecidableEq, Hashable
 
 /-- The signless integer type of the given bitwidth, e.g. `i32`. -/
+@[expose]
 def IntegerType.signless (bitwidth : Nat) : IntegerType := { bitwidth }
+
+@[simp, grind =]
+theorem IntegerType.bitwidth_signless (bitwidth : Nat) :
+    (IntegerType.signless bitwidth).bitwidth = bitwidth := rfl
+
+@[simp, grind =]
+theorem IntegerType.signedness_signless (bitwidth : Nat) :
+    (IntegerType.signless bitwidth).signedness = .signless := rfl
 
 /--
  A floating point type with a given bitwidth.

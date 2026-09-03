@@ -68,11 +68,11 @@ def Riscv_Stack.verifyLocalInvariants {OpInfo : Type} [IsOpCode OpInfo]
     op.verifyPlainOpCounts ctx opIn 0 1
     op.verifyRISCVRegisterTypes ctx opIn
     let properties := op.getProperties! ctx.raw Riscv_Stack.alloca
-    if properties.size.type.bitwidth ≠ 64 then
+    if properties.size.type ≠ IntegerType.signless 64 then
       throw "attribute 'size' must be a 64-bit signless integer attribute"
     if properties.size.value < 0 then
       throw "size must be nonnegative"
-    if properties.alignment.type.bitwidth ≠ 64 then
+    if properties.alignment.type ≠ IntegerType.signless 64 then
       throw "attribute 'alignment' must be a 64-bit signless integer attribute"
     if properties.alignment.value ≤ 0 then
       throw "alignment must be a positive power of two"
