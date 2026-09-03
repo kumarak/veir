@@ -36,6 +36,7 @@ def availablePasses : Std.HashMap String (Pass OpCode) :=
      CastReconcilePass,
      CoerceFunctionBoundariesToRiscvRegPass,
      CoerceModArithFunctionBoundariesPass,
+     CoerceCirFunctionBoundariesPass,
      RISCV.Combine,
      ModArithToArithPass,
      ArithToLLVMPass,
@@ -59,7 +60,8 @@ def passGroups : Std.HashMap String String :=
         "mod-arith-to-arith{barrett pow2-width},cse,coerce-mod-arith-function-boundaries{pow2-width},reconcile-cast,canonicalize,cse,dce"
     |>.insert "riscv"
         "legalize,isel-sdag-riscv64,isel-br-riscv64,isel-riscv64,coerce-function-boundaries-to-riscv-reg,reconcile-cast,riscv-combine,dce"
-    |>.insert "cir" "cir-to-std,canonicalize,cse,dce"
+    |>.insert "cir"
+        "cir-to-std,cse,coerce-cir-function-boundaries,reconcile-cast,canonicalize,cse,dce"
 
 /--
   A human-readable description of every pass group and the passes it expands to,

@@ -3,8 +3,6 @@ module
 public import Veir.Pass
 public import Veir.PatternRewriter.Basic
 import Veir.Passes.Matching
-import Veir.Passes.DCE.dce
-import Veir.Interfaces.FunctionInterfaces
 
 namespace Veir
 
@@ -13,18 +11,16 @@ namespace Veir
 
   Lowers the `cir` dialect's integer core into the `arith`, `cf` and `llvm` dialects.
   `cir.func` and `cir.return` stay in place: the rewriter cannot change an operation's
-  opcode or move its region, so the function operation keeps its `cir` spelling while its
-  boundary types are converted.
+  opcode or move its region, so the function operation keeps its `cir` spelling.
 
-  Since VeIR has no dialect-conversion framework, the pass works in four phases:
-  1. each `cir` value operation is rewritten in place, casting its operands to the builtin
-     type with `builtin.unrealized_conversion_cast`, emitting the `arith` operation, and
-     casting the result back;
-  2. function boundaries (entry-block arguments, return operands, `function_type`) are
-     converted;
-  3. the arguments of every other block, and the operands of the branches feeding them,
-     are converted;
-  4. the cast pairs that cancel are reconciled and dead casts removed.
+  Since VeIR has no dialect-conversion framework, this pass follows `mod-arith-to-arith`:
+  each `cir` value operation is rewritten in place, casting its operands to the builtin type
+  with `builtin.unrealized_conversion_cast`, emitting the `arith` operation, and casting the
+  result back. Branches are lowered to `cf` together with the arguments of the blocks they
+  target, as `isel-br-riscv64` does, since a branch's operand types must match its
+  successor's argument types. The function boundary is left to
+  `coerce-cir-function-boundaries` and the cast round trips to `reconcile-cast`; the `cir`
+  pass group chains them.
 -/
 
 /-! ## Types -/
@@ -35,15 +31,6 @@ def cirTypeToStd (t : TypeAttr) : Option TypeAttr :=
   | .cirIntType it => some (IntegerType.mk it.width : TypeAttr)
   | .cirBoolType _ => some (IntegerType.mk 1 : TypeAttr)
   | _ => none
-
-/-- Whether a `cir` type and a builtin type are each other's lowering. -/
-def isCirRoundTrip (inputType interType : TypeAttr) : Bool :=
-  match inputType.val, interType.val with
-  | .cirIntType it, .integerType i => i.bitwidth = it.width
-  | .integerType i, .cirIntType it => i.bitwidth = it.width
-  | .cirBoolType _, .integerType i => i.bitwidth = 1
-  | .integerType i, .cirBoolType _ => i.bitwidth = 1
-  | _, _ => false
 
 /-- The signedness of a `!cir.int` type; `!cir.bool` counts as unsigned. -/
 def cirIsSigned (t : TypeAttr) : Bool :=
@@ -279,55 +266,13 @@ def lowerUnreachable (rewriter : PatternRewriter OpCode) (op : OperationPtr)
     (some (InsertPoint.before op))
   return rewriter.eraseOp! op
 
-/-! ## Boundaries -/
-
-/--
-  Convert one `cir.func`'s boundary: entry-block arguments, `cir.return` operands and the
-  `function_type`, bridging with casts. This mirrors `coerceFunction` in the function
-  boundary coercion pass, specialised to the `cir` type map.
--/
-def convertCirFunction (ctx : WfIRContext OpCode) (funcOp : OperationPtr) :
-    WfIRContext OpCode := Id.run do
-  let mut ctx := ctx
-  let some entry := FunctionOpInterface.getEntryBlock? funcOp ctx.raw | return ctx
-  let mut outputs : Array Attribute := FunctionOpInterface.getResultTypes! funcOp ctx.raw
-  -- (1) Entry-block arguments: retype in place and cast back to the original type.
-  let mut inputs : Array Attribute := #[]
-  for i in List.range (entry.getNumArguments! ctx.raw) do
-    let bap : BlockArgumentPtr := { block := entry, index := i }
-    let origType := (ValuePtr.blockArgument bap).getType! ctx.raw
-    match cirTypeToStd origType with
-    | some newType =>
-      ctx := WfRewriter.setType! ctx bap newType
-      let ip := InsertPoint.atStart! entry ctx.raw
-      let some (ctx', cast) := WfRewriter.createOp! ctx (OpCode.builtin .unrealized_conversion_cast)
-        #[origType] #[] #[] #[] () (some ip) | return ctx
-      let ctx' := WfRewriter.replaceValue! ctx' bap (cast.getResult 0)
-      ctx := WfRewriter.pushOperand! ctx' cast bap
-      inputs := inputs.push newType.val
-    | none =>
-      inputs := inputs.push origType.val
-  -- (2) Return operands: cast to the builtin type before the return.
-  let returnOps := ctx.raw.operations.keys.filter fun o =>
-    o.getOpType! ctx.raw == .cir .return && o.getParentOp! ctx.raw == some funcOp
-  for retOp in returnOps do
-    for j in List.range (retOp.getNumOperands! ctx.raw) do
-      let opVal := retOp.getOperand! ctx.raw j
-      match cirTypeToStd (opVal.getType! ctx.raw) with
-      | some newType =>
-        let some (ctx', cast) := WfRewriter.createOp! ctx
-          (OpCode.builtin .unrealized_conversion_cast) #[newType] #[opVal] #[] #[] ()
-          (some (InsertPoint.before retOp)) | return ctx
-        ctx := WfRewriter.replaceOperand! ctx' ⟨retOp, j⟩ (cast.getResult 0)
-        outputs := outputs.set! j newType.val
-      | none => pure ()
-  -- (3) The declared function type follows the converted boundary.
-  return FunctionOpInterface.setFunctionType! ctx funcOp inputs outputs
+/-! ## Block arguments -/
 
 /--
   Convert the arguments of a block with predecessors: cast the forwarded operands of every
   predecessor branch, then retype the arguments and cast them back at the block start.
-  This mirrors `convertBlock` in the RISC-V branch selection.
+  This mirrors `convertBlock` in the RISC-V branch selection. Entry blocks have no
+  predecessors and are left to `coerce-cir-function-boundaries`.
 -/
 def convertCirBlock (ctx : WfIRContext OpCode) (block : BlockPtr) : WfIRContext OpCode := Id.run do
   let mut ctx := ctx
@@ -365,29 +310,10 @@ def convertCirBlock (ctx : WfIRContext OpCode) (block : BlockPtr) : WfIRContext 
     ctx := WfRewriter.pushOperand! ctx' cast bap
   return ctx
 
-/-! ## Reconciliation -/
-
-/--
-  Reconcile `X → Y → X` cast round trips between `cir` and builtin types. The parent cast is
-  left to DCE, as a `LocalRewritePattern` may only erase the matched operation.
--/
-def reconcileCirCastLocal (ctx : WfIRContext OpCode) (op : OperationPtr) :
-    Option (WfIRContext OpCode × Option (Array OperationPtr × Array ValuePtr)) := do
-  let some input := matchCastOp op ctx.raw | return (ctx, none)
-  let interType := input.getType! ctx.raw
-  let resultType := ((op.getResult 0).get! ctx.raw).type
-  let .opResult op' := input | return (ctx, none)
-  let some parentInput := matchCastOp op'.op ctx.raw | return (ctx, none)
-  let inputType := parentInput.getType! ctx.raw
-  if resultType ≠ inputType then return (ctx, none)
-  if !isCirRoundTrip inputType interType then return (ctx, none)
-  return (ctx, some (#[], #[parentInput]))
-
 /-! ## Pass implementation -/
 
 def CirToStdPass.impl (ctx : WfIRContext OpCode) (op : OperationPtr)
     (_ : op.InBounds ctx.raw) : ExceptT String IO (WfIRContext OpCode) := do
-  -- (1) Value operations and terminators.
   let lowering := RewritePattern.GreedyRewritePattern #[
     lowerConst, lowerAdd, lowerSub, lowerMul, lowerDiv, lowerRem,
     lowerAnd, lowerOr, lowerXor, lowerShift, lowerNot, lowerMinus,
@@ -396,25 +322,16 @@ def CirToStdPass.impl (ctx : WfIRContext OpCode) (op : OperationPtr)
   ]
   let some lowered := RewritePattern.applyInContext lowering ctx
     | throw "Error while applying cir-to-std lowering (unsupported operation or flag)"
-  -- (2) Function boundaries, (3) block arguments.
+  -- The lowered branches still forward `cir` values: retype the blocks they target.
   let mut converted := lowered
-  let funcOps := converted.raw.operations.keys.filter fun o =>
-    o.getOpType! converted.raw == .cir .func
-  for funcOp in funcOps do
-    converted := convertCirFunction converted funcOp
   for block in converted.raw.blocks.keys do
     converted := convertCirBlock converted block
-  -- (4) Cancel cast round trips and drop the dead casts they leave behind.
-  let reconcile := RewritePattern.GreedyRewritePattern #[
-    .fromLocalRewrite reconcileCirCastLocal, eliminateDeadOp]
-  let some reconciled := RewritePattern.applyInContext reconcile converted
-    | throw "Error while reconciling casts after cir-to-std lowering"
   -- Nothing but the function shell may remain.
-  for o in reconciled.raw.operations.keys do
-    if let .cir cirOp := o.getOpType! reconciled.raw then
+  for o in converted.raw.operations.keys do
+    if let .cir cirOp := o.getOpType! converted.raw then
       if cirOp ≠ .func && cirOp ≠ .return then
         throw s!"cir-to-std: operation '{String.fromUTF8! (IsOpCode.name cirOp)}' was not lowered"
-  return reconciled
+  return converted
 
 public def CirToStdPass : Pass OpCode :=
   { name := "cir-to-std"
