@@ -358,6 +358,16 @@ macro "#assert " e:term : command =>
 #assert expectSuccessType "!cir.func<(!cir.int<s, 32>, ...) -> !cir.int<s, 32>>"
   (CirFuncType.mk (FunctionType.mk
     #[(CirIntType.mk true 32 : Attribute)] #[(CirIntType.mk true 32 : Attribute)] true))
+#assert expectSuccessType "!cir.ptr<!cir.int<s, 32>>"
+  (CirPointerType.mk (CirIntType.mk true 32 : Attribute))
+#assert expectSuccessType "!cir.ptr<!cir.ptr<!cir.bool>>"
+  (CirPointerType.mk (CirPointerType.mk (CirBoolType.mk : Attribute) : Attribute))
+#assert expectSuccessType "!cir.ptr<!cir.array<!cir.int<s, 32> x 4>>"
+  (CirPointerType.mk (.unregisteredAttr (UnregisteredAttr.mk "!cir.array<!cir.int<s, 32> x 4>" true none)))
+  (allowUnregisteredDialect := true)
+#assert expectErrorType "!cir.ptr<>" "cir.ptr pointee type expected" (some 9)
+#assert expectErrorType "!cir.ptr<!cir.bool, target_address_space(1)>"
+  "cir.ptr address spaces are not supported" (some 20)
 #assert expectErrorType "!cir.int<x, 32>" "cir.int signedness expected ('s' or 'u')" (some 9)
 #assert expectErrorType "!cir.int<s>" "Expected punctuation ','" (some 10)
 #assert expectErrorType "!cir.int<s, 0>" "cir.int bitwidth must be positive" (some 13)

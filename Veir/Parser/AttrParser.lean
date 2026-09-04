@@ -1093,6 +1093,25 @@ partial def parseOptionalCirFuncType : AttrParserM (Option TypeAttr) := do
   return some ⟨.cirFuncType (CirFuncType.mk ft), by simp⟩
 
 /--
+  Parse ClangIR's pointer type `!cir.ptr<pointee>`, if present. The pointee is any type, so a
+  pointer to a type VeIR does not model parses when unregistered dialects are allowed.
+  ClangIR's optional address space (`!cir.ptr<T, target_address_space(N)>`) is rejected.
+-/
+partial def parseOptionalCirPointerType : AttrParserM (Option TypeAttr) := do
+  let token ← peekToken
+  let .exclamationIdent := token.kind | return none
+  let input := (← getThe ParserState).input
+  let typeName := { token.slice with start := token.slice.start + 1 }.of input
+  if typeName ≠ "cir.ptr".toByteArray then return none
+  let _ ← consumeToken
+  parsePunctuation "<"
+  let pointee ← parseType "cir.ptr pointee type expected"
+  if ← parseOptionalPunctuation "," then
+    throwAtCurrentPos "cir.ptr address spaces are not supported"
+  parsePunctuation ">"
+  return some ⟨.cirPointerType (CirPointerType.mk pointee.val), by simp⟩
+
+/--
   Parse a `match` optional handle type `!match.optional<...>`, if present.
 
   The wrapped type is parsed with the general type parser rather than a fixed
@@ -1138,6 +1157,8 @@ partial def parseOptionalType : AttrParserM (Option TypeAttr) := do
     return some cirBoolType
   if let some cirFuncType ← parseOptionalCirFuncType then
     return some cirFuncType
+  if let some cirPointerType ← parseOptionalCirPointerType then
+    return some cirPointerType
   if let some llvmVoidType := ← parseOptionalLLVMVoidType then
     return some llvmVoidType
   if let some llvmPointerType := ← parseOptionalLLVMPointerType then
