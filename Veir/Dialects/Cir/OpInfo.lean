@@ -148,11 +148,11 @@ def TypeAttr.verifyCirIntOrBoolType (ty : TypeAttr) (msg : String) : Except Stri
 
 /--
   Verify that a type can be compared by `cir.cmp`: a ClangIR integer or boolean type, or a
-  type VeIR does not model (ClangIR also compares pointers and floats).
+  pointer type, or a type VeIR does not model (ClangIR also compares floats).
 -/
 def TypeAttr.verifyCirComparableType (ty : TypeAttr) (msg : String) : Except String PUnit :=
   match ty.val with
-  | .cirIntType _ | .cirBoolType _ | .unregisteredAttr _ => pure ()
+  | .cirIntType _ | .cirBoolType _ | .cirPointerType _ | .unregisteredAttr _ => pure ()
   | type => throw s!"{msg}, but found {type} instead"
 
 /-- Verify a binary integer operation: two operands of one `!cir.int` type and a like result. -/

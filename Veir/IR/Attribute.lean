@@ -505,6 +505,11 @@ structure CirFuncType where
   functionType : FunctionType
 deriving Inhabited, Repr, Hashable
 
+/-- The payload of a ClangIR pointer type `!cir.ptr<pointee>`. -/
+structure CirPointerType where
+  pointee : Attribute
+deriving Repr, Hashable
+
 /--
   An attribute that holds a sequence of attributes.
 -/
@@ -645,6 +650,8 @@ inductive Attribute
 | cirBoolType (type : CirBoolType)
 /-- ClangIR function type (`!cir.func<(..) -> T>`) -/
 | cirFuncType (type : CirFuncType)
+/-- ClangIR pointer type (`!cir.ptr<T>`) -/
+| cirPointerType (type : CirPointerType)
 /-- ClangIR integer attribute (`#cir.int<N> : !cir.int<..>`) -/
 | cirIntAttr (attr : CirIntAttr)
 /-- ClangIR boolean attribute (`#cir.bool<b> : !cir.bool`) -/
@@ -698,6 +705,9 @@ instance : Inhabited LLVM.ArrayType where
 instance : Inhabited Match.OptionalType where
   default := { innerType := .pdlValueType .mk }
 
+instance : Inhabited CirPointerType where
+  default := { pointee := .cirBoolType .mk }
+
 def ArrayAttr.empty : ArrayAttr := { value := #[] }
 
 /--
@@ -728,6 +738,10 @@ theorem LLVMFunctionType.sizeOf_functionType {ft : LLVMFunctionType} :
 theorem CirFuncType.sizeOf_functionType {ft : CirFuncType} :
     sizeOf ft.functionType < sizeOf ft := by
   grind [cases CirFuncType]
+
+theorem CirPointerType.sizeOf_pointee {t : CirPointerType} :
+    sizeOf t.pointee < sizeOf t := by
+  grind [cases CirPointerType]
 
 theorem ArrayAttr.sizeOf_elems_value {aa : ArrayAttr} (hx : x ∈ aa.value) :
     sizeOf x < sizeOf aa := by
@@ -829,6 +843,15 @@ def LLVM.ArrayType.decEq (arr1 arr2 : LLVM.ArrayType) : Decidable (arr1 = arr2) 
 termination_by sizeOf arr1
 decreasing_by
   have := @LLVM.ArrayType.sizeOf_elems_type
+  grind
+
+def CirPointerType.decEq (type1 type2 : CirPointerType) : Decidable (type1 = type2) :=
+  match Attribute.decEq type1.pointee type2.pointee with
+  | isTrue _ => isTrue (by grind [cases CirPointerType])
+  | isFalse _ => isFalse (by grind)
+termination_by sizeOf type1
+decreasing_by
+  have := @CirPointerType.sizeOf_pointee
   grind
 
 def Match.OptionalType.decEq (opt1 opt2 : Match.OptionalType) : Decidable (opt1 = opt2) :=
@@ -1007,6 +1030,10 @@ def Attribute.decEq (attr1 attr2 : Attribute) : Decidable (attr1 = attr2) := by
     exact (match CirFuncType.decEq type1 type2 with
       | isTrue hEq => isTrue (by grind)
       | isFalse hEq => isFalse (by grind))
+  case cirPointerType.cirPointerType type1 type2 =>
+    exact (match CirPointerType.decEq type1 type2 with
+      | isTrue hEq => isTrue (by grind)
+      | isFalse hEq => isFalse (by grind))
   case cirIntAttr.cirIntAttr attr1 attr2 =>
     exact (match decEq attr1 attr2 with
       | isTrue hEq => isTrue (by grind)
@@ -1084,6 +1111,7 @@ instance : DecidableEq VectorType := VectorType.decEq
 instance : DecidableEq FunctionType := FunctionType.decEq
 instance : DecidableEq LLVMFunctionType := LLVMFunctionType.decEq
 instance : DecidableEq CirFuncType := CirFuncType.decEq
+instance : DecidableEq CirPointerType := CirPointerType.decEq
 instance : DecidableEq ArrayAttr := ArrayAttr.decEq
 instance : DecidableEq DictionaryAttr := DictionaryAttr.decEq
 instance : DecidableEq UnregisteredAttr := UnregisteredAttr.decEq
@@ -1408,6 +1436,12 @@ termination_by sizeOf type
 decreasing_by
   apply LLVM.ArrayType.sizeOf_elems_type
 
+def CirPointerType.toString (type : CirPointerType) : String :=
+  s!"!cir.ptr<{Attribute.toString type.pointee}>"
+termination_by sizeOf type
+decreasing_by
+  apply CirPointerType.sizeOf_pointee
+
 def Match.OptionalType.toString (type : Match.OptionalType) : String :=
   s!"!match.optional<{Attribute.toString type.innerType}>"
 termination_by sizeOf type
@@ -1465,6 +1499,7 @@ def Attribute.toString (attr : Attribute) : String :=
   | .cirIntType type => ToString.toString type
   | .cirBoolType type => ToString.toString type
   | .cirFuncType type => type.toString
+  | .cirPointerType type => type.toString
   | .cirIntAttr attr => ToString.toString attr
   | .cirBoolAttr attr => ToString.toString attr
   | .llvmVoidType type => ToString.toString type
@@ -1499,6 +1534,9 @@ instance : ToString LLVMFunctionType where
 
 instance : ToString CirFuncType where
   toString := CirFuncType.toString
+
+instance : ToString CirPointerType where
+  toString := CirPointerType.toString
 
 instance : ToString ArrayAttr where
   toString := ArrayAttr.toString
@@ -1737,6 +1775,7 @@ def isType (attr : Attribute) : Bool :=
   | .cirIntType _ => true
   | .cirBoolType _ => true
   | .cirFuncType _ => true
+  | .cirPointerType _ => true
   | .cirIntAttr _ => false
   | .cirBoolAttr _ => false
   | .registerType _ => true
@@ -1832,6 +1871,8 @@ theorem isType_cirIntType type : (cirIntType type).isType = true := by rfl
 theorem isType_cirBoolType type : (cirBoolType type).isType = true := by rfl
 @[simp, grind =]
 theorem isType_cirFuncType type : (cirFuncType type).isType = true := by rfl
+@[simp, grind =]
+theorem isType_cirPointerType type : (cirPointerType type).isType = true := by rfl
 @[simp, grind =]
 theorem isType_cirIntAttr attr : (cirIntAttr attr).isType = false := by rfl
 @[simp, grind =]
@@ -2056,6 +2097,10 @@ instance : IsTypeAttr CirBoolType where
 
 instance : IsTypeAttr CirFuncType where
   coe type := Attribute.asType (.cirFuncType type) (by rfl)
+  coe_eq_inject _ := by rfl
+
+instance : IsTypeAttr CirPointerType where
+  coe type := Attribute.asType (.cirPointerType type) (by rfl)
   coe_eq_inject _ := by rfl
 
 instance : CoeDep (Option Nat → RegisterType) RegisterType.mk TypeAttr where
