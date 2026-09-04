@@ -9,7 +9,8 @@ namespace Veir
 /-!
   # CirToStd pass
 
-  Lowers the `cir` dialect's integer core into the `arith`, `cf` and `llvm` dialects.
+  Lowers the `cir` dialect's integer core and local memory operations into the `arith`,
+  `cf` and `llvm` dialects.
   `cir.func` and `cir.return` stay in place: the rewriter cannot change an operation's
   opcode or move its region, so the function operation keeps its `cir` spelling.
 
@@ -31,11 +32,28 @@ namespace Veir
 /-! ## Types -/
 
 /-- The builtin type a `cir` type lowers to, or `none` for types this pass leaves alone. -/
-def cirTypeToStd (t : TypeAttr) : Option TypeAttr :=
-  match t.val with
+def cirAttrToStd (a : Attribute) : Option TypeAttr :=
+  match a with
   | .cirIntType it => some (IntegerType.mk it.width : TypeAttr)
   | .cirBoolType _ => some (IntegerType.mk 1 : TypeAttr)
+  | .cirPointerType _ => some (LLVM.PointerType.mk : TypeAttr)
   | _ => none
+
+def cirTypeToStd (t : TypeAttr) : Option TypeAttr := cirAttrToStd t.val
+
+def isCirPointer (t : TypeAttr) : Bool := t.val matches .cirPointerType _
+
+def isCirIntOrBool (t : TypeAttr) : Bool := t.val matches .cirIntType _ | .cirBoolType _
+
+/--
+  Whether the interpreter can keep a value of this builtin type in memory: pointers and
+  integers of a whole number of bytes. `!cir.bool` locals are therefore left alone for now.
+-/
+def isStdStorageType (t : TypeAttr) : Bool :=
+  match t.val with
+  | .integerType it => [8, 16, 32, 64].contains it.bitwidth
+  | .llvmPointerType _ => true
+  | _ => false
 
 /-- The signedness of a `!cir.int` type; `!cir.bool` counts as unsigned. -/
 def cirIsSigned (t : TypeAttr) : Bool :=
@@ -104,23 +122,24 @@ abbrev StdBuilder :=
 /--
   Lower a single-result `cir` operation `cirOp` with `numOperands` operands: cast the operands
   to builtin types, run `build`, cast the result back to the operation's `cir` result type,
-  and erase the operation. The operation is left in place when `supported` rejects its
-  properties or when one of its types has no builtin counterpart; the pass reports such
-  leftovers in strict mode. `build` returning `none` is an internal failure that aborts the
-  pass.
+  and erase the operation. The operation is left in place when one of its types has no
+  builtin counterpart or when `supported` rejects its properties and `cir` types; the pass
+  reports such leftovers in strict mode. `build` returning `none` is an internal failure that
+  aborts the pass.
 -/
 def lowerValueOpIf (cirOp : Cir) (numOperands : Nat)
-    (supported : Cir.propertiesOf cirOp → Bool) (build : Cir.propertiesOf cirOp → StdBuilder)
+    (supported : Cir.propertiesOf cirOp → Array TypeAttr → TypeAttr → Bool)
+    (build : Cir.propertiesOf cirOp → StdBuilder)
     (rewriter : PatternRewriter OpCode) (op : OperationPtr)
     (_opInBounds : op.InBounds rewriter.ctx.raw) : Option (PatternRewriter OpCode) := do
   let some (operands, props) := matchOp op rewriter.ctx.raw cirOp numOperands
     | return rewriter
-  if !supported props then return rewriter
   let ip := InsertPoint.before op
   let cirResultType := (op.getResult 0 : ValuePtr).getType! rewriter.ctx.raw
   let some stdResultType := cirTypeToStd cirResultType | return rewriter
   let cirOperandTypes := operands.map (·.getType! rewriter.ctx.raw)
   if cirOperandTypes.any (fun t => (cirTypeToStd t).isNone) then return rewriter
+  if !supported props cirOperandTypes cirResultType then return rewriter
   let mut rw := rewriter
   let mut stdOperands : Array ValuePtr := #[]
   for v in operands do
@@ -134,10 +153,10 @@ def lowerValueOpIf (cirOp : Cir) (numOperands : Nat)
 
 /-- `lowerValueOpIf` for operations whose every property variant is supported. -/
 def lowerValueOp (cirOp : Cir) (numOperands : Nat) (build : Cir.propertiesOf cirOp → StdBuilder) :=
-  lowerValueOpIf cirOp numOperands (fun _ => true) build
+  lowerValueOpIf cirOp numOperands (fun _ _ _ => true) build
 
 /-- `cir.const` → `arith.constant`; unmodelled constant values are left in place. -/
-def lowerConst := lowerValueOpIf .const 0 (fun props => props.value matches .int _ | .bool _)
+def lowerConst := lowerValueOpIf .const 0 (fun props _ _ => props.value matches .int _ | .bool _)
     fun props rewriter _ _ resultType ip => do
   let .integerType rt := resultType.val | none
   match props.value with
@@ -146,12 +165,12 @@ def lowerConst := lowerValueOpIf .const 0 (fun props => props.value matches .int
   | .other _ => none
 
 /-- `cir.add` → `arith.addi`; the saturating form is left in place. -/
-def lowerAdd := lowerValueOpIf .add 2 (fun props => !props.flagSet "saturated")
+def lowerAdd := lowerValueOpIf .add 2 (fun props _ _ => !props.flagSet "saturated")
     fun _ rewriter operands _ resultType ip =>
   emitArith rewriter .addi noOverflow resultType operands ip
 
 /-- `cir.sub` → `arith.subi`; the saturating form is left in place. -/
-def lowerSub := lowerValueOpIf .sub 2 (fun props => !props.flagSet "saturated")
+def lowerSub := lowerValueOpIf .sub 2 (fun props _ _ => !props.flagSet "saturated")
     fun _ rewriter operands _ resultType ip =>
   emitArith rewriter .subi noOverflow resultType operands ip
 
@@ -217,20 +236,30 @@ def cmpPredicate (kind : CirCmpKind) (signed : Bool) : Data.LLVM.IntPred :=
   | .ge, true => .sge
   | .ge, false => .uge
 
-/-- `cir.cmp` → `arith.cmpi`. -/
-def lowerCmp := lowerValueOp .cmp 2 fun props rewriter operands cirTypes resultType ip =>
+/-- `cir.cmp` → `arith.cmpi`; pointer comparisons are left in place. -/
+def lowerCmp := lowerValueOpIf .cmp 2 (fun _ operandTypes _ => operandTypes.all isCirIntOrBool)
+    fun props rewriter operands cirTypes resultType ip =>
   emitArith rewriter .cmpi { predicate := cmpPredicate props.kind (cirIsSigned cirTypes[0]!) }
     resultType operands ip
 
-/-- `cir.select` → `arith.select`. -/
-def lowerSelect := lowerValueOp .select 3 fun _ rewriter operands _ resultType ip =>
+/-- `cir.select` → `arith.select`; selects between pointers are left in place. -/
+def lowerSelect := lowerValueOpIf .select 3
+    (fun _ operandTypes _ => operandTypes.all isCirIntOrBool)
+    fun _ rewriter operands _ resultType ip =>
   emitArith rewriter .select () resultType operands ip
 
-/-- `cir.cast` for the integral, int_to_bool and bool_to_int kinds; other kinds are left in place. -/
+/--
+  `cir.cast` for the integral, int_to_bool and bool_to_int kinds, and for pointer bitcasts,
+  which are the identity on opaque pointers; other kinds are left in place.
+-/
 def lowerCast := lowerValueOpIf .cast 1
-    (fun props => props.kind matches .integral | .int_to_bool | .bool_to_int)
+    (fun props operandTypes resultType => match props.kind with
+      | .integral | .int_to_bool | .bool_to_int => true
+      | .bitcast => operandTypes.all isCirPointer && isCirPointer resultType
+      | .other _ => false)
     fun props rewriter operands cirTypes resultType ip => do
   let src := operands[0]!
+  if props.kind matches .bitcast then return (rewriter, src)
   let .integerType st := (src.getType! rewriter.ctx.raw).val | none
   let .integerType rt := resultType.val | none
   match props.kind with
@@ -247,7 +276,87 @@ def lowerCast := lowerValueOpIf .cast 1
   | .int_to_bool =>
     let (rewriter, zero) ← emitStdConstant rewriter 0 st.bitwidth ip
     emitArith rewriter .cmpi { predicate := .ne } resultType #[src, zero] ip
-  | .other _ => none
+  | .bitcast | .other _ => none
+
+/-! ## Memory operations
+
+`!cir.ptr<T>` lowers to the opaque `!llvm.ptr`; the pointee only matters for the element
+type of `llvm.alloca` and the loaded/stored builtin type. Operations whose values the
+interpreter cannot keep in memory (`!cir.bool`, odd widths) are left in place.
+-/
+
+/-- The `llvm` alignment attribute for a `cir` memory operation: its `alignment`, or none. -/
+def stdAlignment (props : CirMemoryProperties) : IntegerAttr :=
+  (props.alignment?).getD { value := 0, type := { bitwidth := 64 } }
+
+/-- `cir.alloca` → `llvm.alloca` of the pointee's builtin type; the element count defaults to one. -/
+def lowerAlloca (rewriter : PatternRewriter OpCode) (op : OperationPtr)
+    (_opInBounds : op.InBounds rewriter.ctx.raw) : Option (PatternRewriter OpCode) := do
+  if op.getOpType! rewriter.ctx.raw ≠ .cir .alloca then return rewriter
+  let props : CirMemoryProperties := op.getProperties! rewriter.ctx.raw Cir.alloca
+  let cirResultType := (op.getResult 0 : ValuePtr).getType! rewriter.ctx.raw
+  let .cirPointerType ptr := cirResultType.val | return rewriter
+  let some elemType := cirAttrToStd ptr.pointee | return rewriter
+  if !isStdStorageType elemType then return rewriter
+  let operands := op.getOperands! rewriter.ctx.raw
+  if operands.any (fun v => (cirTypeToStd (v.getType! rewriter.ctx.raw)).isNone) then
+    return rewriter
+  let ip := InsertPoint.before op
+  let (rewriter, count) ← match operands[0]? with
+    | some count => castToStd rewriter count ip
+    | none => emitStdConstant rewriter 1 64 ip
+  let allocaProps : AllocaProperties :=
+    { alignment := stdAlignment props, elem_type := elemType, inalloca := false }
+  let (rewriter, alloca) ← rewriter.createOp! (.llvm .alloca) #[(LLVM.PointerType.mk : TypeAttr)]
+    #[count] #[] #[] allocaProps (some ip)
+  let (rewriter, back) ← castToCir rewriter (alloca.getResult 0) cirResultType ip
+  let rewriter := rewriter.replaceValue! (op.getResult 0) back
+  return rewriter.eraseOp! op
+
+/-- `cir.load` → `llvm.load` of the builtin type. -/
+def lowerLoad (rewriter : PatternRewriter OpCode) (op : OperationPtr)
+    (_opInBounds : op.InBounds rewriter.ctx.raw) : Option (PatternRewriter OpCode) := do
+  if op.getOpType! rewriter.ctx.raw ≠ .cir .load then return rewriter
+  let props : CirMemoryProperties := op.getProperties! rewriter.ctx.raw Cir.load
+  let cirResultType := (op.getResult 0 : ValuePtr).getType! rewriter.ctx.raw
+  let some stdResultType := cirTypeToStd cirResultType | return rewriter
+  if !isStdStorageType stdResultType then return rewriter
+  let addr := op.getOperand! rewriter.ctx.raw 0
+  let some _ := cirTypeToStd (addr.getType! rewriter.ctx.raw) | return rewriter
+  let ip := InsertPoint.before op
+  let (rewriter, stdAddr) ← castToStd rewriter addr ip
+  let loadProps : LoadProperties :=
+    { alignment := stdAlignment props, volatile_ := props.flagSet "is_volatile"
+      nontemporal := props.flagSet "is_nontemporal", invariant := props.flagSet "invariant"
+      invariantGroup := false, syncscope := none, access_groups := .empty
+      alias_scopes := .empty, noalias_scopes := .empty, tbaa := .empty }
+  let (rewriter, load) ← rewriter.createOp! (.llvm .load) #[stdResultType] #[stdAddr] #[] #[]
+    loadProps (some ip)
+  let (rewriter, back) ← castToCir rewriter (load.getResult 0) cirResultType ip
+  let rewriter := rewriter.replaceValue! (op.getResult 0) back
+  return rewriter.eraseOp! op
+
+/-- `cir.store` → `llvm.store` of the builtin type. -/
+def lowerStore (rewriter : PatternRewriter OpCode) (op : OperationPtr)
+    (_opInBounds : op.InBounds rewriter.ctx.raw) : Option (PatternRewriter OpCode) := do
+  if op.getOpType! rewriter.ctx.raw ≠ .cir .store then return rewriter
+  let props : CirMemoryProperties := op.getProperties! rewriter.ctx.raw Cir.store
+  let value := op.getOperand! rewriter.ctx.raw 0
+  let addr := op.getOperand! rewriter.ctx.raw 1
+  let some stdValueType := cirTypeToStd (value.getType! rewriter.ctx.raw) | return rewriter
+  if !isStdStorageType stdValueType then return rewriter
+  let some _ := cirTypeToStd (addr.getType! rewriter.ctx.raw) | return rewriter
+  let ip := InsertPoint.before op
+  let (rewriter, stdValue) ← castToStd rewriter value ip
+  let (rewriter, stdAddr) ← castToStd rewriter addr ip
+  let storeProps : StoreProperties :=
+    { alignment := stdAlignment props, volatile_ := props.flagSet "is_volatile"
+      nontemporal := props.flagSet "is_nontemporal", invariantGroup := false
+      syncscope := none, access_groups := .empty, alias_scopes := .empty
+      noalias_scopes := .empty, tbaa := .empty }
+  let (rewriter, _) ← rewriter.createOp! (.llvm .store) #[] #[stdValue, stdAddr] #[] #[]
+    storeProps (some ip)
+  return rewriter.eraseOp! op
 
 /-! ## Terminators -/
 
@@ -335,6 +444,7 @@ def CirToStdPass.impl (strict : Bool) (ctx : WfIRContext OpCode) (op : Operation
     lowerConst, lowerAdd, lowerSub, lowerMul, lowerDiv, lowerRem,
     lowerAnd, lowerOr, lowerXor, lowerShift, lowerNot, lowerMinus,
     lowerMin, lowerMax, lowerCmp, lowerSelect, lowerCast,
+    lowerAlloca, lowerLoad, lowerStore,
     lowerBr, lowerBrCond, lowerUnreachable
   ]
   let some lowered := RewritePattern.applyInContext lowering ctx

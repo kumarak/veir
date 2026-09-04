@@ -10,8 +10,10 @@ meta import Veir.Meta.OpCode
 # The `cir` dialect
 
 The integer core of ClangIR (https://llvm.github.io/clangir/): signed and unsigned integer
-scalars, booleans, and flat control flow. Structured control flow, pointers, records and
-floating point are not modelled; their operations remain unregistered.
+scalars, booleans, pointers with local memory, and flat control flow. Structured control
+flow, calls, globals, records, arrays and floating point are not modelled; their operations
+remain unregistered, and the registered operations accept their unmodelled variants (a
+pointer comparison, a float constant) without giving them semantics.
 -/
 
 namespace Veir
@@ -42,6 +44,9 @@ inductive Cir where
 | br
 | brcond
 | unreachable
+| alloca
+| load
+| store
 deriving Inhabited, Repr, Hashable, DecidableEq
 
 @[expose, properties_of]
@@ -54,6 +59,7 @@ match op with
 | .cmp => CirCmpProperties
 | .cast => CirCastProperties
 | .brcond => CirBrCondProperties
+| .alloca | .load | .store => CirMemoryProperties
 | _ => Unit
 
 def Cir.fromAttrDict
@@ -67,6 +73,7 @@ def Cir.fromAttrDict
   | .cmp => CirCmpProperties.fromAttrDict attrDict
   | .cast => CirCastProperties.fromAttrDict attrDict
   | .brcond => CirBrCondProperties.fromAttrDict attrDict
+  | .alloca | .load | .store => CirMemoryProperties.fromAttrDict attrDict
   | .return | .mul | .div | .rem | .and | .or | .xor | .not | .min | .max
   | .select | .br | .unreachable => Cir.noProperties attrDict
 
@@ -81,12 +88,21 @@ def Cir.toAttrDict
   | .cmp => props.toAttrDict
   | .cast => props.toAttrDict
   | .brcond => props.toAttrDict
+  | .alloca | .load | .store => props.toAttrDict
   | _ => Std.HashMap.emptyWithCapacity 0
 
+/--
+  Memory effects. The memory operations must declare theirs: a result-less operation with
+  no write effect is trivially dead, and the greedy rewrite driver erases dead operations
+  before any pattern sees them.
+-/
 @[get_effects]
-def Cir.getEffects
-    (_op : Cir) (_props : Cir.propertiesOf _op) : MemoryEffects :=
-  .none
+def Cir.getEffects (op : Cir) (props : Cir.propertiesOf op) : MemoryEffects :=
+  match op, props with
+  | .alloca, _ => .allocate
+  | .load, props => if props.flagSet "is_volatile" then .readWrite else .read
+  | .store, props => if props.flagSet "is_volatile" then .readWrite else .write
+  | _, _ => .none
 
 def Cir.isConstantLike (op : Cir) : Bool :=
   match op with
@@ -153,6 +169,13 @@ def TypeAttr.verifyCirIntOrBoolType (ty : TypeAttr) (msg : String) : Except Stri
 def TypeAttr.verifyCirComparableType (ty : TypeAttr) (msg : String) : Except String PUnit :=
   match ty.val with
   | .cirIntType _ | .cirBoolType _ | .cirPointerType _ | .unregisteredAttr _ => pure ()
+  | type => throw s!"{msg}, but found {type} instead"
+
+/-- Verify that a type is a ClangIR pointer type. -/
+def TypeAttr.verifyCirPointerType (ty : TypeAttr) (msg : String) :
+    Except String CirPointerType :=
+  match ty.val with
+  | .cirPointerType type => pure type
   | type => throw s!"{msg}, but found {type} instead"
 
 /-- Verify a binary integer operation: two operands of one `!cir.int` type and a like result. -/
@@ -247,6 +270,11 @@ def OperationPtr.verifyCirCastOp {OpInfo : Type} [IsOpCode OpInfo]
       s!"{instrName}: Expected bool_to_int cast source to have !cir.bool type"
     let _ ← resultType.verifyCirIntType
       s!"{instrName}: Expected bool_to_int cast result to have !cir.int type"
+  | .bitcast =>
+    -- Only pointer bitcasts are modelled; ClangIR's other bitcasts are accepted as-is.
+    if let .cirPointerType _ := srcType.val then
+      let _ ← resultType.verifyCirPointerType
+        s!"{instrName}: Expected bitcast of a pointer to have !cir.ptr result type"
   | .other _ => pure ()
 
 /-- Verify `cir.const`: the constant's type is the result type and its value fits. -/
@@ -266,6 +294,43 @@ def OperationPtr.verifyCirConstOp {OpInfo : Type} [IsOpCode OpInfo]
       if attr.type.isSigned then (-(2 ^ (width - 1)), 2 ^ (width - 1)) else (0, 2 ^ width)
     if attr.value < lo ∨ hi ≤ attr.value then
       throw s!"{instrName}: constant value {attr.value} does not fit in {attr.type}"
+
+/-- Verify `cir.alloca`: an optional `!cir.int` element count and a `!cir.ptr` result. -/
+def OperationPtr.verifyCirAllocaOp {OpInfo : Type} [IsOpCode OpInfo]
+    (op : OperationPtr) (ctx : WfIRContext OpInfo)
+    (opIn : op.InBounds ctx.raw) : Except String PUnit := do
+  let instrName := String.fromUTF8! (IsOpCode.name (op.getOpType ctx.raw opIn))
+  let numOperands := op.getNumOperands ctx.raw opIn
+  if numOperands > 1 then
+    throw s!"{instrName}: Expected at most 1 operand"
+  op.verifyPlainOpCounts ctx opIn numOperands 1
+  if numOperands = 1 then
+    let _ ← ((op.getOperand! ctx.raw 0).getType! ctx.raw).verifyCirIntType
+      s!"{instrName}: Expected the element count to have !cir.int type"
+  let _ ← ((op.getResult 0).get! ctx.raw).type.verifyCirPointerType
+    s!"{instrName}: Expected result to have !cir.ptr type"
+
+/-- Verify `cir.load`: a `!cir.ptr<T>` address and a `T` result. -/
+def OperationPtr.verifyCirLoadOp {OpInfo : Type} [IsOpCode OpInfo]
+    (op : OperationPtr) (ctx : WfIRContext OpInfo)
+    (opIn : op.InBounds ctx.raw) : Except String PUnit := do
+  op.verifyPlainOpCounts ctx opIn 1 1
+  let instrName := String.fromUTF8! (IsOpCode.name (op.getOpType ctx.raw opIn))
+  let ptr ← ((op.getOperand! ctx.raw 0).getType! ctx.raw).verifyCirPointerType
+    s!"{instrName}: Expected the address to have !cir.ptr type"
+  if ((op.getResult 0).get! ctx.raw).type.val ≠ ptr.pointee then
+    throw s!"{instrName}: Expected result type to match the pointee type"
+
+/-- Verify `cir.store`: a `T` value and a `!cir.ptr<T>` address, no results. -/
+def OperationPtr.verifyCirStoreOp {OpInfo : Type} [IsOpCode OpInfo]
+    (op : OperationPtr) (ctx : WfIRContext OpInfo)
+    (opIn : op.InBounds ctx.raw) : Except String PUnit := do
+  op.verifyPlainOpCounts ctx opIn 2 0
+  let instrName := String.fromUTF8! (IsOpCode.name (op.getOpType ctx.raw opIn))
+  let ptr ← ((op.getOperand! ctx.raw 1).getType! ctx.raw).verifyCirPointerType
+    s!"{instrName}: Expected the address to have !cir.ptr type"
+  if ((op.getOperand! ctx.raw 0).getType! ctx.raw).val ≠ ptr.pointee then
+    throw s!"{instrName}: Expected the stored value's type to match the pointee type"
 
 /-- Verify `cir.brcond`: a `!cir.bool` condition, then the forwarded operand segments. -/
 def OperationPtr.verifyCirBrCondOp {OpInfo : Type} [IsOpCode OpInfo]
@@ -327,6 +392,9 @@ def Cir.verifyLocalInvariants {OpInfo : Type} [IsOpCode OpInfo]
   | .br => op.verifyUnconditionalBranch ctx opIn
   | .brcond => op.verifyCirBrCondOp ctx opIn
   | .unreachable => op.verifyPlainOpCounts ctx opIn 0 0
+  | .alloca => op.verifyCirAllocaOp ctx opIn
+  | .load => op.verifyCirLoadOp ctx opIn
+  | .store => op.verifyCirStoreOp ctx opIn
 
 instance : HasOpInfo Cir where
   verifyLocalInvariants := Cir.verifyLocalInvariants

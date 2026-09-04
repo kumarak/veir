@@ -21,4 +21,16 @@
     // CHECK-NEXT:   "cir.return"([[LT]]) : (i1) -> ()
   }) : () -> ()
 
+  // Pointer boundaries are coerced to the opaque `!llvm.ptr`; the round trips through
+  // `!cir.ptr` are identities and are reconciled away.
+  "cir.func"() <{sym_name = "pass_through", function_type = !cir.func<(!cir.ptr<!cir.int<s, 32>>) -> !cir.ptr<!cir.int<s, 32>>>}> ({
+  ^bb(%p : !cir.ptr<!cir.int<s, 32>>):
+    %pi = "builtin.unrealized_conversion_cast"(%p) : (!cir.ptr<!cir.int<s, 32>>) -> !llvm.ptr
+    %out = "builtin.unrealized_conversion_cast"(%pi) : (!llvm.ptr) -> !cir.ptr<!cir.int<s, 32>>
+    "cir.return"(%out) : (!cir.ptr<!cir.int<s, 32>>) -> ()
+    // CHECK:      "cir.func"() <{"function_type" = !cir.func<(!llvm.ptr) -> !llvm.ptr>, "sym_name" = "pass_through"}>
+    // CHECK-NEXT: ^{{.*}}([[P:%.*]] : !llvm.ptr):
+    // CHECK-NEXT:   "cir.return"([[P]]) : (!llvm.ptr) -> ()
+  }) : () -> ()
+
 }) : () -> ()

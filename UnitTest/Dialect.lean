@@ -22,6 +22,7 @@ example : HasDialect OpCode Builtin := inferInstance
 #guard Cir.fromName "cir.brcond".toUTF8 = some .brcond
 #guard OpCode.fromName "cir.add".toUTF8 = some (.cir .add)
 #guard OpCode.name (.cir .unreachable) = "cir.unreachable".toUTF8
+#guard Cir.fromName "cir.alloca".toUTF8 = some .alloca
 
 /-! Dialects can define conversion functions to and from the global opcode type. -/
 abbrev Veir.Arith.from? (op : OpInfo) [HasOpInfo OpInfo] [HasDialect OpInfo Arith]

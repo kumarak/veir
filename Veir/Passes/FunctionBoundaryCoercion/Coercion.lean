@@ -39,6 +39,7 @@ def BoundaryCoercion.target : BoundaryCoercion → TypeAttr → Option TypeAttr
     match t.val with
     | .cirIntType it => some (IntegerType.mk it.width : TypeAttr)
     | .cirBoolType _ => some (IntegerType.mk 1 : TypeAttr)
+    | .cirPointerType _ => some (LLVM.PointerType.mk : TypeAttr)
     | _ => none
 
 /-- The return-terminator opcode paired with a function op (`func.return` for

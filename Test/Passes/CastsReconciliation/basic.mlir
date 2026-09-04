@@ -288,4 +288,15 @@
         "func.return"() : () -> ()
     }) : () -> ()
 
+    "func.func"()  <{function_type = (!cir.ptr<!cir.int<s, 32>>) -> (), sym_name = "f22"}> ({
+      ^1(%0 : !cir.ptr<!cir.int<s, 32>>):
+        // `!cir.ptr -> !llvm.ptr -> !cir.ptr` is the identity: both are opaque pointers.
+        %1 = "builtin.unrealized_conversion_cast"(%0) : (!cir.ptr<!cir.int<s, 32>>) -> !llvm.ptr
+        %2 = "builtin.unrealized_conversion_cast"(%1) : (!llvm.ptr) -> !cir.ptr<!cir.int<s, 32>>
+        "test.test"(%2) : (!cir.ptr<!cir.int<s, 32>>) -> ()
+        // CHECK:        ^{{.*}}([[ARG:%.*]] : !cir.ptr<!cir.int<s, 32>>):
+        // CHECK-NEXT:   "test.test"([[ARG]]) : (!cir.ptr<!cir.int<s, 32>>) -> ()
+        "func.return"() : () -> ()
+    }) : () -> ()
+
 }) : () -> ()

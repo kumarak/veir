@@ -27,6 +27,14 @@
   ^bb3(%r : !cir.int<s, 32>):
     "cir.return"(%r) : (!cir.int<s, 32>) -> ()
   }) : () -> ()
+
+  "cir.func"() <{function_type = !cir.func<(!cir.int<s, 32>) -> !cir.int<s, 32>>, sym_name = "locals"}> ({
+  ^bb0(%a : !cir.int<s, 32>):
+    %x = "cir.alloca"() <{alignment = 4 : i64, init, name = "x"}> : () -> !cir.ptr<!cir.int<s, 32>>
+    "cir.store"(%a, %x) <{alignment = 4 : i64}> : (!cir.int<s, 32>, !cir.ptr<!cir.int<s, 32>>) -> ()
+    %v = "cir.load"(%x) <{alignment = 4 : i64}> : (!cir.ptr<!cir.int<s, 32>>) -> !cir.int<s, 32>
+    "cir.return"(%v) : (!cir.int<s, 32>) -> ()
+  }) : () -> ()
 }) : () -> ()
 
 // CHECK:      "cir.func"() <{"function_type" = !cir.func<(i32, i8) -> i32>, "sym_name" = "binops"}> ({
@@ -51,4 +59,13 @@
 // CHECK-NEXT: "llvm.unreachable"() : () -> ()
 // CHECK-NEXT: ^{{.*}}([[R:%.*]] : i32):
 // CHECK-NEXT: "cir.return"([[R]]) : (i32) -> ()
+// CHECK-NEXT: }) : () -> ()
+
+// CHECK:      "cir.func"() <{"function_type" = !cir.func<(i32) -> i32>, "sym_name" = "locals"}> ({
+// CHECK-NEXT: ^{{.*}}([[A:%.*]] : i32):
+// CHECK-NEXT: [[ONE:%.*]] = "arith.constant"() <{"value" = 1 : i64}> : () -> i64
+// CHECK-NEXT: [[X:%.*]] = "llvm.alloca"([[ONE]]) <{"alignment" = 4 : i64, "elem_type" = i32}> : (i64) -> !llvm.ptr
+// CHECK-NEXT: "llvm.store"([[A]], [[X]]){{.*}}: (i32, !llvm.ptr) -> ()
+// CHECK-NEXT: [[V:%.*]] = "llvm.load"([[X]]){{.*}}: (!llvm.ptr) -> i32
+// CHECK-NEXT: "cir.return"([[V]]) : (i32) -> ()
 // CHECK-NEXT: }) : () -> ()

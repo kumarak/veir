@@ -48,6 +48,7 @@ inductive CirCastKind where
   | integral
   | int_to_bool
   | bool_to_int
+  | bitcast
   | other (code : Nat)
 deriving Inhabited, Repr, Hashable, DecidableEq
 
@@ -55,12 +56,14 @@ def CirCastKind.ofNat : Nat → CirCastKind
   | 27 => .integral
   | 28 => .int_to_bool
   | 38 => .bool_to_int
+  | 1 => .bitcast
   | code => .other code
 
 def CirCastKind.toNat : CirCastKind → Nat
   | .integral => 27
   | .int_to_bool => 28
   | .bool_to_int => 38
+  | .bitcast => 1
   | .other code => code
 
 /--
@@ -173,13 +176,43 @@ def CirOverflowFlagsProperties.fromAttrDict (attrDict : Std.HashMap ByteArray At
     Except String CirOverflowFlagsProperties :=
   return { extra := DictionaryAttr.fromArray attrDict.toArray }
 
-/-- Whether a flag is set: present as a unit attribute, or as a non-zero `i1`. -/
-def CirOverflowFlagsProperties.flagSet (props : CirOverflowFlagsProperties) (key : String) :
-    Bool :=
-  match props.extra.entries.find? (fun (k, _) => k = key.toUTF8) with
+/--
+  Whether a flag is set in a verbatim property dictionary: present as a unit attribute, or as
+  a non-zero `i1`.
+-/
+private def extraFlagSet (extra : DictionaryAttr) (key : String) : Bool :=
+  match extra.entries.find? (fun (k, _) => k = key.toUTF8) with
   | some (_, .unitAttr _) => true
   | some (_, .integerAttr attr) => attr.value ≠ 0
   | _ => false
+
+/-- Whether a flag is set: present as a unit attribute, or as a non-zero `i1`. -/
+def CirOverflowFlagsProperties.flagSet (props : CirOverflowFlagsProperties) (key : String) :
+    Bool :=
+  extraFlagSet props.extra key
+
+/--
+  Properties of `cir.alloca`, `cir.load` and `cir.store`. ClangIR's attributes (`name`,
+  `alignment`, `init`, `is_volatile`, `mem_order`, ...) are kept verbatim so that the
+  operations round-trip; the lowering reads the ones it needs through the accessors.
+-/
+structure CirMemoryProperties where
+  extra : DictionaryAttr
+deriving Inhabited, Repr, Hashable, DecidableEq
+
+def CirMemoryProperties.fromAttrDict (attrDict : Std.HashMap ByteArray Attribute) :
+    Except String CirMemoryProperties :=
+  return { extra := DictionaryAttr.fromArray attrDict.toArray }
+
+/-- Whether a flag such as `is_volatile` is set. -/
+def CirMemoryProperties.flagSet (props : CirMemoryProperties) (key : String) : Bool :=
+  extraFlagSet props.extra key
+
+/-- The `alignment` attribute, if present and an integer. -/
+def CirMemoryProperties.alignment? (props : CirMemoryProperties) : Option IntegerAttr :=
+  match props.extra.entries.find? (fun (k, _) => k = "alignment".toUTF8) with
+  | some (_, .integerAttr attr) => some attr
+  | _ => none
 
 /-- Properties of `cir.shift`: `isShiftleft` is a unit attribute, absent for right shifts. -/
 structure CirShiftProperties where
@@ -245,6 +278,10 @@ def CirConstProperties.toAttrDict (props : CirConstProperties) : Std.HashMap Byt
   (Std.HashMap.emptyWithCapacity 1).insert "value".toUTF8 props.value.toAttribute
 
 def CirOverflowFlagsProperties.toAttrDict (props : CirOverflowFlagsProperties) :
+    Std.HashMap ByteArray Attribute :=
+  Std.HashMap.ofList props.extra.entries.toList
+
+def CirMemoryProperties.toAttrDict (props : CirMemoryProperties) :
     Std.HashMap ByteArray Attribute :=
   Std.HashMap.ofList props.extra.entries.toList
 

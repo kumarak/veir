@@ -40,6 +40,17 @@
   "cir.func"() <{function_type = !cir.func<()>, sym_name = "nothing"}> ({
     "cir.return"() : () -> ()
   }) : () -> ()
+  "cir.func"() <{function_type = !cir.func<(!cir.int<s, 32>, !cir.ptr<!cir.int<u, 8>>) -> !cir.int<s, 32>>, sym_name = "memory"}> ({
+  ^bb0(%n : !cir.int<s, 32>, %q : !cir.ptr<!cir.int<u, 8>>):
+    %x = "cir.alloca"() <{alignment = 4 : i64, init, name = "x"}> : () -> !cir.ptr<!cir.int<s, 32>>
+    %arr = "cir.alloca"(%n) <{alignment = 4 : i64, name = "arr"}> : (!cir.int<s, 32>) -> !cir.ptr<!cir.int<s, 32>>
+    "cir.store"(%n, %x) <{alignment = 4 : i64}> : (!cir.int<s, 32>, !cir.ptr<!cir.int<s, 32>>) -> ()
+    "cir.store"(%n, %arr) <{is_volatile}> : (!cir.int<s, 32>, !cir.ptr<!cir.int<s, 32>>) -> ()
+    %v = "cir.load"(%x) <{alignment = 4 : i64}> : (!cir.ptr<!cir.int<s, 32>>) -> !cir.int<s, 32>
+    %p = "cir.cast"(%q) <{kind = 1 : i32}> : (!cir.ptr<!cir.int<u, 8>>) -> !cir.ptr<!cir.int<s, 32>>
+    %w = "cir.load"(%p) <{is_volatile}> : (!cir.ptr<!cir.int<s, 32>>) -> !cir.int<s, 32>
+    "cir.return"(%w) : (!cir.int<s, 32>) -> ()
+  }) : () -> ()
 }) : () -> ()
 
 // CHECK:      "cir.func"() <{"calling_conv" = 0 : i32, "function_type" = !cir.func<(!cir.int<s, 32>, !cir.int<u, 8>) -> !cir.int<s, 32>>, "global_visibility" = 0 : i32, "linkage" = 0 : i32, "sym_name" = "ops"}> ({
@@ -78,4 +89,15 @@
 // CHECK-NEXT: "cir.func"() <{"function_type" = !cir.func<()>, "sym_name" = "nothing"}> ({
 // CHECK-NEXT: ^{{.*}}():
 // CHECK-NEXT: "cir.return"() : () -> ()
+// CHECK-NEXT: }) : () -> ()
+// CHECK-NEXT: "cir.func"() <{"function_type" = !cir.func<(!cir.int<s, 32>, !cir.ptr<!cir.int<u, 8>>) -> !cir.int<s, 32>>, "sym_name" = "memory"}> ({
+// CHECK-NEXT: ^{{.*}}(%{{.*}} : !cir.int<s, 32>, %{{.*}} : !cir.ptr<!cir.int<u, 8>>):
+// CHECK-NEXT: %{{.*}} = "cir.alloca"() <{"alignment" = 4 : i64, init, "name" = "x"}> : () -> !cir.ptr<!cir.int<s, 32>>
+// CHECK-NEXT: %{{.*}} = "cir.alloca"(%{{.*}}) <{"alignment" = 4 : i64, "name" = "arr"}> : (!cir.int<s, 32>) -> !cir.ptr<!cir.int<s, 32>>
+// CHECK-NEXT: "cir.store"(%{{.*}}, %{{.*}}) <{"alignment" = 4 : i64}> : (!cir.int<s, 32>, !cir.ptr<!cir.int<s, 32>>) -> ()
+// CHECK-NEXT: "cir.store"(%{{.*}}, %{{.*}}) <{is_volatile}> : (!cir.int<s, 32>, !cir.ptr<!cir.int<s, 32>>) -> ()
+// CHECK-NEXT: %{{.*}} = "cir.load"(%{{.*}}) <{"alignment" = 4 : i64}> : (!cir.ptr<!cir.int<s, 32>>) -> !cir.int<s, 32>
+// CHECK-NEXT: %{{.*}} = "cir.cast"(%{{.*}}) <{"kind" = 1 : i32}> : (!cir.ptr<!cir.int<u, 8>>) -> !cir.ptr<!cir.int<s, 32>>
+// CHECK-NEXT: %{{.*}} = "cir.load"(%{{.*}}) <{is_volatile}> : (!cir.ptr<!cir.int<s, 32>>) -> !cir.int<s, 32>
+// CHECK-NEXT: "cir.return"(%{{.*}}) : (!cir.int<s, 32>) -> ()
 // CHECK-NEXT: }) : () -> ()
